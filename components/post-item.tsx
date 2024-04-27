@@ -34,7 +34,7 @@ export function PostItem({
       <div className="max-w-none text-muted-foreground">{description}</div>
       <div className="flex justify-between items-center">
         <dl>
-          <dt className="sr-only">Published On</dt>
+          <dt className="sr-only">发布于</dt>
           <dd className="text-sm sm:text-base font-medium flex items-center gap-1">
             <Calendar className="h-4 w-4" />
             <time dateTime={date}>{formatDate(date)}</time>
@@ -44,7 +44,7 @@ export function PostItem({
           href={"/" + slug}
           className={cn(buttonVariants({ variant: "link" }), "py-0")}
         >
-          Read more →
+          详细阅读 →
         </Link>
       </div>
     </article>
