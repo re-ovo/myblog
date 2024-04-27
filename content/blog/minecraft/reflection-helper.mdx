@@ -1,0 +1,332 @@
+---
+title: "使用Kotlin DSL改进Bukkit反射复杂度"
+description: "简化Bukkit插件开发中的反射操作"
+date: 2024-04-27
+tags: ["minecraft", "kotlin", "bukkit", "spigot"]
+published: true
+---
+
+## 反射
+
+跨版本兼容是Bukkit插件开发中的一个大问题，许多插件使用了一些Spigot的内部API，通常会使用反射来访问这些API。
+
+
+## 反射之殇
+在每个不同的版本中，这些API的类名、方法
+名、参数等都可能会发生变化，这就导致了插件的代码在不同版本中无法直接运行，因此，开发者需要为每个版本编写不同的**反射匹配代码**，来匹配到对应的内部API。
+
+例如, 一个[示例](https://github.com/Team-Fruit/UsefulBuildersWand/blob/d68341584cc5f38a10897eeea8c44a5bcf4a015a/src/main/java/net/teamfruit/usefulbuilderswand/NativeMinecraft_v1_8_R3.java#L25)如下:
+
+```java
+public class NativeMinecraft_v1_8_R3 implements NativeMinecraft {
+	private String internalversion;
+
+	private final Class<?> c$CraftItemStack;
+	private final Class<?> c$CraftBlock;
+	private final Class<?> c$ItemStack;
+	private final Class<?> c$Item;
+    // ..
+	private final Class<?> c$EntityPlayer;
+	private final Class<?> c$PlayerConnection;
+	private final Class<?> c$Packet;
+
+	private final Method m$CraftItemStack$asNMSCopy;
+	private final Method m$ItemStack$getItem;
+	// ...
+	private final Method m$PlayerInventory$getItemInHand;
+	private final Method m$PlayerInventory$setItemInHand;
+
+	private final Field f$Block$material;
+	private final Field f$CraftBlock$chunk;
+	private final Field f$Block$stepSound;
+
+	private final Field f$CraftWorld$world;
+	private final Field f$MovingObjectPosition$direction;
+	private final Field f$EntityPlayer$playerConnection;
+	private final Field f$EnumParticle$REDSTONE;
+
+	private final Constructor<?> n$BlockPosition;
+	private final Constructor<?> n$Vec3D;
+	private final Constructor<?> n$PacketPlayOutWorldParticles;
+
+	private final Map<Material, Boolean> cacheitem = new HashMap<Material, Boolean>();
+	private final Map<Material, Boolean> cacheblock = new HashMap<Material, Boolean>();
+	private final Map<Material, String> cacheblocksound = new HashMap<Material, String>();
+
+	public NativeMinecraft_v1_8_R3(final String internalversion) throws Exception {
+		this.internalversion = internalversion;
+
+		this.c$CraftItemStack = $class("org.bukkit.craftbukkit.%version%.inventory.CraftItemStack");
+		this.c$CraftBlock = $class("org.bukkit.craftbukkit.%version%.block.CraftBlock");
+		this.c$ItemStack = $class("net.minecraft.server.%version%.ItemStack");
+		this.c$Item = $class("net.minecraft.server.%version%.Item");
+		this.c$Block = $class("net.minecraft.server.%version%.Block");
+		// ...
+		this.c$EntityPlayer = $class("net.minecraft.server.%version%.EntityPlayer");
+		this.c$PlayerConnection = $class("net.minecraft.server.%version%.PlayerConnection");
+		this.c$Packet = $class("net.minecraft.server.%version%.Packet");
+
+		this.m$CraftItemStack$asNMSCopy = $method(this.c$CraftItemStack, "asNMSCopy", ItemStack.class);
+		this.m$ItemStack$getItem = $method(this.c$ItemStack, "getItem");
+		this.m$Item$k = $method(this.c$Item, "k");
+		// ...
+		this.m$PlayerInventory$getItemInHand = $method(PlayerInventory.class, "getItemInHand");
+		this.m$PlayerInventory$setItemInHand = $method(PlayerInventory.class, "setItemInHand", ItemStack.class);
+
+		this.f$Block$material = $pfield(this.c$Block, "material");
+		this.f$CraftBlock$chunk = $pfield(this.c$CraftBlock, "chunk");
+		this.f$Block$stepSound = $field(this.c$Block, "stepSound");
+		this.f$CraftWorld$world = $pfield(this.c$CraftWorld, "world");
+		this.f$MovingObjectPosition$direction = $field(this.c$MovingObjectPosition, "direction");
+		this.f$EntityPlayer$playerConnection = $field(this.c$EntityPlayer, "playerConnection");
+		this.f$EnumParticle$REDSTONE = $field(this.c$EnumParticle, "REDSTONE");
+
+		this.n$BlockPosition = $new(this.c$BlockPosition, int.class, int.class, int.class);
+		this.n$Vec3D = $new(this.c$Vec3D, double.class, double.class, double.class);
+		this.n$PacketPlayOutWorldParticles = $new(this.c$PacketPlayOutWorldParticles, this.c$EnumParticle, boolean.class, float.class, float.class, float.class, float.class, float.class, float.class, float.class, int.class, int[].class);
+	}
+
+	Class<?> $class(final String _class) throws Exception {
+		return Class.forName(_class.replace("%version%", this.internalversion));
+	}
+
+	@Nullable
+	Class<?> $$class(final String _class) {
+		try {
+			return $class(_class);
+		} catch (final Exception e) {
+		}
+		return null;
+	}
+
+	public boolean hasSubType(final ItemStack itemStack) {
+		if (itemStack!=null) {
+			final Material type = itemStack.getType();
+			final Boolean cached = this.cacheitem.get(type);
+			if (cached!=null)
+				return cached;
+			else
+				try {
+					final Object nItemStack = this.m$CraftItemStack$asNMSCopy.invoke(null, itemStack);
+					final Object nItem = this.m$ItemStack$getItem.invoke(nItemStack);
+					final boolean hasSubType = (Boolean) this.m$Item$k.invoke(nItem);
+					this.cacheitem.put(type, hasSubType);
+					return hasSubType;
+				} catch (final Exception e) {
+				}
+		}
+		return true;
+	}
+    // ..
+}
+```
+
+这样的代码非常冗长，并且在不同版本变化的时候，需要大量的修改。
+
+## Kotlin的解决方案
+
+Kotlin是一种现代的、静态类型的编程语言，它可以与Java完全兼容，并且可以直接调用Java代码。Kotlin的语法更加简洁，可以大大减少代码量。
+Kotlin也没有受检异常，这意味可以减少许多模板代码。
+
+所以，我们可以使用Kotlin来简化反射匹配，接下来设计一个Kotlin DSL来简化这个过程。
+
+首先，我们将匹配操作抽象为一个接口:
+
+```kotlin
+abstract class ReflectionMatcher<T> {
+    protected val rules = arrayListOf<ReflectionMatcher<T>>()
+
+    abstract fun matches(target: T): Boolean
+}
+```
+匹配`Class`, `Method`, `Field`等操作都可以使用这个接口来实现:
+
+```kotlin
+class ClassReflectionMatcher : ReflectionMatcher<Class<*>>() {
+    override fun matches(target: Class<*>): Boolean {
+        return rules.all { it.matches(target) }
+    }
+}
+
+class MethodReflectionMatcher : ReflectionMatcher<Method>() {
+    override fun matches(target: Method): Boolean {
+        return rules.all { it.matches(target) }
+    }
+}
+
+class FieldReflectionMatcher : ReflectionMatcher<Field>() {
+    override fun matches(target: Field): Boolean {
+        return rules.all { it.matches(target) }
+    }
+}
+```
+
+然后，我们可以给这些匹配器添加一些规则定义，方便在DSL中使用:
+
+```kotlin
+// 以ClassReflectionMatcher为例
+class ClassReflectionMatcher : ReflectionMatcher<Class<*>>() {
+    override fun matches(target: Class<*>): Boolean {
+        return rules.all { it.matches(target) }
+    }
+
+    fun anyMatch(vararg matchers: ClassReflectionMatcher.() -> Unit) {
+        rules.add(object : ReflectionMatcher<Class<*>>() {
+            override fun matches(target: Class<*>): Boolean {
+                return matchers.any {
+                    ClassReflectionMatcher().apply(it).matches(target)
+                }
+            }
+        })
+    }
+
+    /**
+     * 匹配类的类型, 使用equals判断
+     *
+     * @param classes 类的类型, 可以为多个，只要有一个匹配即可
+     */
+    fun oneOf(vararg classes: Class<*>) {
+        rules.add(object : ReflectionMatcher<Class<*>>() {
+            override fun matches(target: Class<*>): Boolean {
+                return classes.any { it == target }
+            }
+        })
+    }
+
+    /**
+     * 匹配类的修饰符, 例如 `Modifier.PUBLIC` or `Modifier.STATIC`
+     *
+     * @param modifiers 修饰符的集合, 例如 `Modifier.PUBLIC` or `Modifier.STATIC`
+     * @see java.lang.reflect.Modifier
+     */
+    fun modifier(modifiers: Int) {
+        rules.add(object : ReflectionMatcher<Class<*>>() {
+            override fun matches(target: Class<*>): Boolean {
+                // modifier参数代表了需要匹配的modifier修饰符的集合, 例如 Modifier.PUBLIC or Modifier.STATIC
+                // 通过位运算来判断是否匹配
+                return target.modifiers and modifiers == modifiers
+            }
+        })
+    }
+
+    /**
+     * 匹配类的名字
+     *
+     * @param nameMatcher Lambda表达式, 传入类名, 返回是否匹配
+     * @see java.lang.Class.getName
+     */
+    fun className(nameMatcher: (String) -> Boolean) {
+        rules.add(object : ReflectionMatcher<Class<*>>() {
+            override fun matches(target: Class<*>): Boolean {
+                return nameMatcher(target.name)
+            }
+        })
+    }
+
+    /**
+     * 判断类是否存在指定的方法
+     *
+     * @param methodMatcher Lambda表达式, 传入MethodReflectionMatcher, 用于匹配方法
+     * @see MethodReflectionMatcher
+     * @see java.lang.Class.getDeclaredMethod
+     */
+    fun declaredMethodExists(methodMatcher: MethodReflectionMatcher.() -> Unit) {
+        rules.add(object : ReflectionMatcher<Class<*>>() {
+            override fun matches(target: Class<*>): Boolean {
+                return target.declaredMethods.any {
+                    MethodReflectionMatcher().apply(methodMatcher).matches(it)
+                }
+            }
+        })
+    }
+}
+```
+
+最后，定义一些函数方便使用DSL:
+```kotlin
+fun classMatcher(
+    matcher: ReflectionMatcher.ClassReflectionMatcher.() -> Unit
+): ReflectionMatcher.ClassReflectionMatcher {
+    return ReflectionMatcher.ClassReflectionMatcher().apply(matcher)
+}
+
+fun methodMatcher(
+    matcher: ReflectionMatcher.MethodReflectionMatcher.() -> Unit
+): ReflectionMatcher.MethodReflectionMatcher {
+    return ReflectionMatcher.MethodReflectionMatcher().apply(matcher)
+}
+
+fun reflectionMatcher(
+    matcher: ReflectionMatcher.FieldReflectionMatcher.() -> Unit
+): ReflectionMatcher.FieldReflectionMatcher {
+    return ReflectionMatcher.FieldReflectionMatcher().apply(matcher)
+}
+
+fun Class<*>.ensureMatching(matcher: ReflectionMatcher.ClassReflectionMatcher.() -> Unit): Class<*> {
+    val classMatcher = ReflectionMatcher.ClassReflectionMatcher().apply(matcher)
+    if (!classMatcher.matches(this)) {
+        throw IllegalArgumentException("Class $this does not match the given matcher")
+    }
+    return this
+}
+
+fun Method.ensureMatching(matcher: ReflectionMatcher.MethodReflectionMatcher.() -> Unit): Method {
+    val methodMatcher = ReflectionMatcher.MethodReflectionMatcher().apply(matcher)
+    if (!methodMatcher.matches(this)) {
+        throw IllegalArgumentException("Method $this does not match the given matcher")
+    }
+    return this
+}
+
+fun Field.ensureMatching(matcher: ReflectionMatcher.FieldReflectionMatcher.() -> Unit): Field {
+    val fieldMatcher = ReflectionMatcher.FieldReflectionMatcher().apply(matcher)
+    if (!fieldMatcher.matches(this)) {
+        throw IllegalArgumentException("Field $this does not match the given matcher")
+    }
+    return this
+}
+
+fun Class<*>.findMatchingDeclaredMethods(matcher: ReflectionMatcher.MethodReflectionMatcher.() -> Unit): Set<Method> {
+    val methodMatcher = ReflectionMatcher.MethodReflectionMatcher().apply(matcher)
+    return declaredMethods.filter { methodMatcher.matches(it) }.toSet()
+}
+
+fun Class<*>.findMatchingDeclaredFields(matcher: ReflectionMatcher.FieldReflectionMatcher.() -> Unit): Set<Field> {
+    val fieldMatcher = ReflectionMatcher.FieldReflectionMatcher().apply(matcher)
+    return declaredFields.filter { fieldMatcher.matches(it) }.toSet()
+}
+```
+
+## 使用DSL
+
+现在，我们可以使用DSL来简化反射匹配的代码了:
+
+```kotlin
+val method = Test::class.java
+        .ensureMatching {
+            className { it.endsWith("Test") }
+            modifier(Modifier.PUBLIC)
+        }
+        .findMatchingDeclaredMethods {
+            methodName { it.startsWith("get") }
+            modifier(Modifier.PRIVATE)
+            returnType {
+                oneOf(String::class.java)
+            }
+            byteCode {
+                jumpInsnOpcodes(Opcodes.IFEQ, Opcodes.IFNE, Opcodes.IFNULL, Opcodes.IFNONNULL)
+            }
+            anyMatch(
+                {
+                    parameterCount(4)
+                },
+                {
+                    parameterCount(2)
+                }
+            )
+        }
+        .first()
+```
+
+## 完整代码
+https://gist.github.com/re-ovo/e5bd2453824a33f10182e1384b3fdc9d
